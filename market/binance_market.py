@@ -1,5 +1,6 @@
 from market.market_interface import MarketInterface
 from binance.client import Client
+from binance.enums import *
 
 DEFAULT_CURRENCY_LIST = ['BUSD', 'USDT']
 
@@ -40,30 +41,62 @@ class BinanceMarketConnector(MarketInterface):
         return float(trade_info[0]['price'])
 
     def get_unify_balance(self, default_currency = None):
-        res = self.get_balance()
-        values = [_["value"] for _ in res ]
+        res = self.get_balance(default_currency=default_currency)
+        values = [_['value'] for _ in res ]
         return sum(values)
 
-    def open_order_execute(self, symbol, price, volume, side):
-        print("open_order_execute")
+    def refine_order_volume(self, symbol, volume):
+        step_size = self.get_step_size(symbol)
+
+        volume /= volume / step_size
+        volume //= volume // 1
+        volume *= volume * step_size
+
+        return volume
 
     def open_order(self,
         symbol, # required: BTC/BUSD, XRP/BTC etc
-        price,  # not required
-        volume, # required
-        trade_side, # required: BUY / SELL
-
+        side,  # required: BUY / SELL
+        volume,  # required
+        price,  # None => Semi Market Price (order book [10])
     ):
-        print("open_order")
+        if price is None:
+            order_book = self.get_order_book(symbol, limit=10)
+            price = order_book[side][-1]
+        volume = self.refine_order_volume(symbol, volume)
+
+        side = SIDE_BUY if side == "BUY" else SIDE_SELL
+
+        self.client.create_order(
+            symbol=symbol,
+            side=side,
+            type=ORDER_TYPE_LIMIT,
+            timeInForce=TIME_IN_FORCE_GTC,
+            quantity=volume,
+            price=price
+        )
 
     def get_symbols(self):
         print("get_symbols")
 
-    def get_order_book(self, symbol):
-        print("get_order_book")
+    def get_order_book(self, symbol, limit=10):
+        res = self.client.get_order_book(symbol=symbol, limit=limit)
+        res = {
+            "SELL": [float(_[0]) for _ in res["asks"] ],
+            "BUY": [float(_[0]) for _ in res["bids"] ]
+        }
+        return res
 
     def cancel_all_order(self, symbol):
         print("cancel_all_order")
 
     def get_symbol_detail(self, symbol):
-        print("get_symbol_detail")
+        info = self.client.get_symbol_info(symbol)
+        return info
+
+    def get_step_size(self, symbol):
+        info = self.get_symbol_detail(symbol)
+        filters = info['filters']
+        lot_size = [_ for _ in filters if _['filterType'] == 'LOT_SIZE'][0]
+
+        return float(lot_size['stepSize'])
